@@ -1,0 +1,21 @@
+{
+  "name": "messagecaller",
+  "version": "1.0.0",
+  "description": "Messenger with 4-digit number chat system",
+  "main": "messagecaller/server/back-end.js",
+  "scripts": {
+    "start": "node messagecaller/server/back-end.js",
+    "dev": "nodemon messagecaller/server/back-end.js"
+  },
+  "keywords": ["messenger", "chat", "calls"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
