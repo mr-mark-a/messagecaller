@@ -3,6 +3,7 @@ const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,14 +18,74 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..')));
 
+// Email transporter configuration (configure with your SMTP settings)
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: process.env.SMTP_PORT || 587,
+  secure: false,
+  auth: {
+    user: process.env.EMAIL_USER || 'your-email@gmail.com',
+    pass: process.env.EMAIL_PASS || 'your-app-password'
+  }
+});
+
+// Encode text to numbers: A=1, B=2, ... Z=26, space=0, others=char code
+function encodeToNumbers(text) {
+  return text.split('').map(char => {
+    const upper = char.toUpperCase();
+    if (char === ' ') return '0';
+    if (upper >= 'A' && upper <= 'Z') {
+      return (upper.charCodeAt(0) - 64).toString();
+    }
+    return char.charCodeAt(0).toString();
+  }).join('-');
+}
+
+// Decode numbers to text
+function decodeFromNumbers(encoded) {
+  return encoded.split('-').map(num => {
+    const n = parseInt(num);
+    if (n === 0) return ' ';
+    if (n >= 1 && n <= 26) {
+      return String.fromCharCode(n + 64);
+    }
+    return String.fromCharCode(n);
+  }).join('');
+}
+
 // In-memory storage for users and messages
 const users = new Map(); // userId -> {number, nickname, lastname, photo, socketId}
 const messages = new Map(); // chatId -> [{from, to, text, timestamp}]
 const activeConnections = new Map(); // socketId -> userId
+const signInRequests = new Map(); // requestId -> {number, requestingSocketId}
 
 // Serve the front-end
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'front-end.html'));
+});
+
+// API endpoint to encode text to numbers
+app.post('/api/encode', (req, res) => {
+  const { text } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: 'Text is required' });
+  }
+  const encoded = encodeToNumbers(text);
+  res.json({ encoded });
+});
+
+// API endpoint to decode numbers to text
+app.post('/api/decode', (req, res) => {
+  const { encoded } = req.body;
+  if (!encoded) {
+    return res.status(400).json({ error: 'Encoded text is required' });
+  }
+  try {
+    const decoded = decodeFromNumbers(encoded);
+    res.json({ decoded });
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid encoded format' });
+  }
 });
 
 // Socket.IO connection
@@ -33,7 +94,7 @@ io.on('connection', (socket) => {
 
   // Register user
   socket.on('register', (userData) => {
-    const { number, nickname, lastname, photo } = userData;
+    const { number, nickname, lastname, photo, age, email, phone, birthday } = userData;
     
     // Check if number is 4 digits
     if (!number || number.length !== 4 || !/^\d{4}$/.test(number)) {
@@ -41,19 +102,48 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Check if number already exists
-    const existingUser = Array.from(users.values()).find(u => u.number === number);
-    if (existingUser && existingUser.socketId !== socket.id) {
-      socket.emit('error', { message: 'This number is already taken' });
+    const userId = number;
+    const existingUser = users.get(userId);
+    
+    // If account already exists, sign in instead of creating new account
+    if (existingUser) {
+      // Check if user is already logged in on another device
+      if (existingUser.socketId) {
+        // User is logged in elsewhere, request authorization
+        const requestId = Date.now().toString();
+        signInRequests.set(requestId, {
+          number: number,
+          requestingSocketId: socket.id
+        });
+
+        io.to(existingUser.socketId).emit('signInRequest', { requestId });
+        socket.emit('awaitingAuthorization', { message: 'Waiting for authorization from your other device...' });
+        console.log('Sign-in request sent to existing session for:', userId);
+      } else {
+        // No active session, allow direct sign-in
+        existingUser.socketId = socket.id;
+        activeConnections.set(socket.id, userId);
+
+        socket.emit('registered', {
+          userId,
+          user: existingUser
+        });
+
+        console.log('User signed in (auto-login from register):', userId);
+      }
       return;
     }
 
-    const userId = number;
+    // Create new account
     users.set(userId, {
       number,
       nickname: nickname || 'User',
       lastname: lastname || '',
       photo: photo || '',
+      age: age || 0,
+      email: email || '',
+      phone: phone || '',
+      birthday: birthday || '',
       socketId: socket.id
     });
     activeConnections.set(socket.id, userId);
@@ -64,6 +154,51 @@ io.on('connection', (socket) => {
     });
 
     console.log('User registered:', userId, nickname);
+  });
+
+  // Approve sign-in
+  socket.on('approveSignIn', (data) => {
+    const { requestId } = data;
+    const request = signInRequests.get(requestId);
+    
+    if (!request) {
+      return;
+    }
+
+    const userId = activeConnections.get(socket.id);
+    if (!userId) {
+      return;
+    }
+
+    const user = users.get(userId);
+    
+    // Update socket ID to new device
+    user.socketId = request.requestingSocketId;
+    activeConnections.delete(socket.id);
+    activeConnections.set(request.requestingSocketId, userId);
+
+    // Notify new device
+    io.to(request.requestingSocketId).emit('signInApproved', {
+      userId,
+      user
+    });
+
+    signInRequests.delete(requestId);
+    console.log('Sign-in approved for:', userId);
+  });
+
+  // Deny sign-in
+  socket.on('denySignIn', (data) => {
+    const { requestId } = data;
+    const request = signInRequests.get(requestId);
+    
+    if (!request) {
+      return;
+    }
+
+    io.to(request.requestingSocketId).emit('signInDenied');
+    signInRequests.delete(requestId);
+    console.log('Sign-in denied');
   });
 
   // Update profile
@@ -78,6 +213,10 @@ io.on('connection', (socket) => {
     if (profileData.nickname !== undefined) user.nickname = profileData.nickname;
     if (profileData.lastname !== undefined) user.lastname = profileData.lastname;
     if (profileData.photo !== undefined) user.photo = profileData.photo;
+    if (profileData.age !== undefined) user.age = profileData.age;
+    if (profileData.email !== undefined) user.email = profileData.email;
+    if (profileData.phone !== undefined) user.phone = profileData.phone;
+    if (profileData.birthday !== undefined) user.birthday = profileData.birthday;
 
     socket.emit('profileUpdated', { user });
   });
@@ -134,6 +273,40 @@ io.on('connection', (socket) => {
     // Send to recipient if online
     if (toUser.socketId) {
       io.to(toUser.socketId).emit('messageReceived', message);
+    }
+
+    // Send email notification with encoded message if recipient has email
+    if (toUser.email && toUser.email.trim() !== '') {
+      const encodedMessage = encodeToNumbers(text);
+      const fromUser = users.get(fromUserId);
+      
+      const mailOptions = {
+        from: process.env.EMAIL_USER || 'messagecaller@example.com',
+        to: toUser.email,
+        subject: `Message from ${fromUser.nickname} (${fromUser.number})`,
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h2>New Message from ${fromUser.nickname} ${fromUser.lastname || ''}</h2>
+            <p><strong>User Code:</strong> ${fromUser.number}</p>
+            <hr>
+            <p><strong>Message (Original):</strong></p>
+            <p style="background: #f0f0f0; padding: 15px; border-radius: 5px;">${text}</p>
+            <hr>
+            <p><strong>Encoded Message:</strong></p>
+            <p style="background: #e8f5e9; padding: 15px; border-radius: 5px; font-family: monospace;">${encodedMessage}</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">Reply to this message on MessageCaller app</p>
+          </div>
+        `
+      };
+
+      emailTransporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          console.log('Email send error:', error);
+        } else {
+          console.log('Email sent:', info.response);
+        }
+      });
     }
 
     console.log('Message sent from', fromUserId, 'to', to);

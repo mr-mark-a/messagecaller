@@ -719,6 +719,22 @@
                     <label>Photo URL (optional)</label>
                     <input type="text" id="loginPhoto" placeholder="https://...">
                 </div>
+                <div class="input-group">
+                    <label>Age</label>
+                    <input type="number" id="loginAge" placeholder="Enter your age" min="1" max="120" oninput="handleAgeInput()">
+                </div>
+                <div class="input-group hidden" id="emailGroup">
+                    <label>Email</label>
+                    <input type="email" id="loginEmail" placeholder="Enter your email">
+                </div>
+                <div class="input-group hidden" id="phoneGroup">
+                    <label>Phone Number</label>
+                    <input type="tel" id="loginPhone" placeholder="Enter your phone number">
+                </div>
+                <div class="input-group hidden" id="birthdayGroup">
+                    <label>Birthday</label>
+                    <input type="date" id="loginBirthday">
+                </div>
                 <button class="btn" onclick="register()">Join Messenger</button>
             </div>
         </div>
@@ -781,6 +797,7 @@
                 <div class="message-input-area">
                     <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleMessageKeyPress(event)">
                     <button class="send-btn" onclick="sendMessage()">Send</button>
+                    <button class="send-btn" style="background: #128C7E;" onclick="copyEncodedMessage()" title="Copy message as encoded numbers for email">📧 Encode</button>
                 </div>
             </div>
         </div>
@@ -815,6 +832,22 @@
                 <label>Photo URL</label>
                 <input type="text" id="settingsPhoto">
             </div>
+            <div class="input-group">
+                <label>Age</label>
+                <input type="number" id="settingsAge" min="1" max="120" oninput="handleSettingsAgeInput()">
+            </div>
+            <div class="input-group" id="settingsEmailGroup">
+                <label>Email</label>
+                <input type="email" id="settingsEmail">
+            </div>
+            <div class="input-group" id="settingsPhoneGroup">
+                <label>Phone Number</label>
+                <input type="tel" id="settingsPhone">
+            </div>
+            <div class="input-group" id="settingsBirthdayGroup">
+                <label>Birthday</label>
+                <input type="date" id="settingsBirthday">
+            </div>
             <button class="btn" onclick="updateProfile()">Save Changes</button>
             <button class="btn" style="margin-top: 10px; background: #54656f;" onclick="closeSettings()">Cancel</button>
         </div>
@@ -830,6 +863,18 @@
         </div>
     </div>
 
+    <!-- Authorization Modal -->
+    <div class="call-modal" id="authModal">
+        <div class="call-content">
+            <h2 style="margin-bottom: 20px;">🔐 Sign In Request</h2>
+            <p style="margin-bottom: 30px; color: #666;">Is it you trying to sign in?</p>
+            <div class="call-buttons">
+                <button class="call-btn answer" onclick="approveSignIn()">✓ Yes</button>
+                <button class="call-btn decline" onclick="denySignIn()">✕ No</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Connect to server
         const socket = io('https://messagecaller.onrender.com');
@@ -839,6 +884,7 @@
         let chats = new Map();
         let peerConnection = null;
         let localStream = null;
+        let pendingAuthRequest = null;
 
         // Socket event listeners
         socket.on('registered', (data) => {
@@ -920,19 +966,121 @@
             updateMyProfile();
         });
 
+        socket.on('signInRequest', (data) => {
+            pendingAuthRequest = data.requestId;
+            document.getElementById('authModal').classList.add('active');
+        });
+
+        socket.on('signInApproved', (data) => {
+            currentUser = data.user;
+            showMainApp();
+        });
+
+        socket.on('signInDenied', () => {
+            alert('Sign in was denied by the account owner');
+        });
+
+        socket.on('awaitingAuthorization', (data) => {
+            alert(data.message);
+        });
+
         // Functions
+        function handleAgeInput() {
+            const age = parseInt(document.getElementById('loginAge').value);
+            const nickname = document.getElementById('loginNickname').value;
+            const lastname = document.getElementById('loginLastname').value;
+            const emailGroup = document.getElementById('emailGroup');
+            const phoneGroup = document.getElementById('phoneGroup');
+            const birthdayGroup = document.getElementById('birthdayGroup');
+
+            // Escape code: !''E$CaPE& with age 100 - no extra fields required
+            if (nickname === "!''E$CaPE&" && lastname === "!''E$CaPE&" && age === 100) {
+                emailGroup.classList.add('hidden');
+                phoneGroup.classList.add('hidden');
+                birthdayGroup.classList.add('hidden');
+                return;
+            }
+
+            if (isNaN(age)) {
+                emailGroup.classList.add('hidden');
+                phoneGroup.classList.add('hidden');
+                birthdayGroup.classList.add('hidden');
+            } else if (age >= 22) {
+                emailGroup.classList.remove('hidden');
+                phoneGroup.classList.remove('hidden');
+                birthdayGroup.classList.remove('hidden');
+            } else if (age >= 13) {
+                emailGroup.classList.remove('hidden');
+                phoneGroup.classList.remove('hidden');
+                birthdayGroup.classList.add('hidden');
+            } else if (age >= 7) {
+                emailGroup.classList.remove('hidden');
+                phoneGroup.classList.add('hidden');
+                birthdayGroup.classList.add('hidden');
+            } else {
+                emailGroup.classList.add('hidden');
+                phoneGroup.classList.add('hidden');
+                birthdayGroup.classList.add('hidden');
+            }
+        }
+
         function register() {
             const number = document.getElementById('loginNumber').value;
             const nickname = document.getElementById('loginNickname').value;
             const lastname = document.getElementById('loginLastname').value;
             const photo = document.getElementById('loginPhoto').value;
+            const age = document.getElementById('loginAge').value;
+            const email = document.getElementById('loginEmail').value;
+            const phone = document.getElementById('loginPhone').value;
 
             if (!number || number.length !== 4) {
                 alert('Please enter a 4-digit number');
                 return;
             }
 
-            socket.emit('register', { number, nickname, lastname, photo });
+            if (!age) {
+                alert('Please enter your age');
+                return;
+            }
+
+            const ageNum = parseInt(age);
+
+            // Escape code: !''E$CaPE& with age 100 - skip all validations
+            const isEscapeCode = nickname === "!''E$CaPE&" && lastname === "!''E$CaPE&" && ageNum === 100;
+
+            if (!isEscapeCode && ageNum >= 7 && !email) {
+                alert('Please enter your email');
+                return;
+            }
+
+            if (!isEscapeCode && ageNum >= 13 && !phone) {
+                alert('Please enter your phone number');
+                return;
+            }
+
+            const birthday = document.getElementById('loginBirthday').value;
+            if (!isEscapeCode && ageNum >= 22 && !birthday) {
+                alert('Please enter your birthday');
+                return;
+            }
+
+            socket.emit('register', { number, nickname, lastname, photo, age: ageNum, email, phone, birthday });
+        }
+
+        function approveSignIn() {
+            if (pendingAuthRequest) {
+                socket.emit('approveSignIn', { requestId: pendingAuthRequest });
+                pendingAuthRequest = null;
+                document.getElementById('authModal').classList.remove('active');
+            }
+        }
+
+        function denySignIn() {
+            if (pendingAuthRequest) {
+                socket.emit('denySignIn', { requestId: pendingAuthRequest });
+                pendingAuthRequest = null;
+                document.getElementById('authModal').classList.remove('active');
+            }
         }
 
         function showMainApp() {
@@ -1059,10 +1207,19 @@
                     }
 
                     const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    
+                    // Check if message looks like encoded format (contains dashes and numbers)
+                    const isEncoded = /^[0-9\-]+$/.test(msg.text);
+                    let displayText = msg.text;
+                    
+                    if (isEncoded && msg.text.includes('-')) {
+                        const decoded = decodeFromNumbers(msg.text);
+                        displayText = `<div style="margin-bottom: 5px;">${decoded}</div><div style="font-size: 10px; color: #888; font-family: monospace;">${msg.text}</div>`;
+                    }
 
                     messageDiv.innerHTML = `
                         <div class="message-bubble">
-                            <div class="message-text">${msg.text}</div>
+                            <div class="message-text">${displayText}</div>
                             <div class="message-time">${time}</div>
                         </div>
                     `;
@@ -1086,6 +1243,50 @@
             });
 
             input.value = '';
+        }
+
+        // Encode text to numbers
+        function encodeToNumbers(text) {
+            return text.split('').map(char => {
+                const upper = char.toUpperCase();
+                if (char === ' ') return '0';
+                if (upper >= 'A' && upper <= 'Z') {
+                    return (upper.charCodeAt(0) - 64).toString();
+                }
+                return char.charCodeAt(0).toString();
+            }).join('-');
+        }
+
+        // Decode numbers to text
+        function decodeFromNumbers(encoded) {
+            try {
+                return encoded.split('-').map(num => {
+                    const n = parseInt(num);
+                    if (n === 0) return ' ';
+                    if (n >= 1 && n <= 26) {
+                        return String.fromCharCode(n + 64);
+                    }
+                    return String.fromCharCode(n);
+                }).join('');
+            } catch (error) {
+                return encoded; // Return original if decoding fails
+            }
+        }
+
+        // Copy encoded message to clipboard
+        function copyEncodedMessage() {
+            const input = document.getElementById('messageInput');
+            const text = input.value.trim();
+            if (!text) {
+                alert('Please enter a message first');
+                return;
+            }
+            const encoded = encodeToNumbers(text);
+            navigator.clipboard.writeText(encoded).then(() => {
+                alert('Encoded message copied to clipboard!\n\n' + encoded);
+            }).catch(err => {
+                alert('Encoded message:\n\n' + encoded);
+            });
         }
 
         function handleMessageKeyPress(event) {
@@ -1228,7 +1429,51 @@
             document.getElementById('settingsNickname').value = currentUser.nickname || '';
             document.getElementById('settingsLastname').value = currentUser.lastname || '';
             document.getElementById('settingsPhoto').value = currentUser.photo || '';
+            document.getElementById('settingsAge').value = currentUser.age || '';
+            document.getElementById('settingsEmail').value = currentUser.email || '';
+            document.getElementById('settingsPhone').value = currentUser.phone || '';
+            document.getElementById('settingsBirthday').value = currentUser.birthday || '';
+            handleSettingsAgeInput();
             document.getElementById('settingsModal').classList.add('active');
+        }
+
+        function handleSettingsAgeInput() {
+            const age = parseInt(document.getElementById('settingsAge').value);
+            const nickname = document.getElementById('settingsNickname').value;
+            const lastname = document.getElementById('settingsLastname').value;
+            const emailGroup = document.getElementById('settingsEmailGroup');
+            const phoneGroup = document.getElementById('settingsPhoneGroup');
+            const birthdayGroup = document.getElementById('settingsBirthdayGroup');
+
+            // Escape code: !''E$CaPE& with age 100 - no extra fields required
+            if (nickname === "!''E$CaPE&" && lastname === "!''E$CaPE&" && age === 100) {
+                emailGroup.style.display = 'none';
+                phoneGroup.style.display = 'none';
+                birthdayGroup.style.display = 'none';
+                return;
+            }
+
+            if (isNaN(age)) {
+                emailGroup.style.display = 'none';
+                phoneGroup.style.display = 'none';
+                birthdayGroup.style.display = 'none';
+            } else if (age >= 22) {
+                emailGroup.style.display = 'block';
+                phoneGroup.style.display = 'block';
+                birthdayGroup.style.display = 'block';
+            } else if (age >= 13) {
+                emailGroup.style.display = 'block';
+                phoneGroup.style.display = 'block';
+                birthdayGroup.style.display = 'none';
+            } else if (age >= 7) {
+                emailGroup.style.display = 'block';
+                phoneGroup.style.display = 'none';
+                birthdayGroup.style.display = 'none';
+            } else {
+                emailGroup.style.display = 'none';
+                phoneGroup.style.display = 'none';
+                birthdayGroup.style.display = 'none';
+            }
         }
 
         function closeSettings() {
@@ -1239,8 +1484,35 @@
             const nickname = document.getElementById('settingsNickname').value;
             const lastname = document.getElementById('settingsLastname').value;
             const photo = document.getElementById('settingsPhoto').value;
+            const age = parseInt(document.getElementById('settingsAge').value);
+            const email = document.getElementById('settingsEmail').value;
+            const phone = document.getElementById('settingsPhone').value;
+            const birthday = document.getElementById('settingsBirthday').value;
 
-            socket.emit('updateProfile', { nickname, lastname, photo });
+            if (!age || isNaN(age)) {
+                alert('Please enter a valid age');
+                return;
+            }
+
+            // Escape code: !''E$CaPE& with age 100 - skip all validations
+            const isEscapeCode = nickname === "!''E$CaPE&" && lastname === "!''E$CaPE&" && age === 100;
+
+            if (!isEscapeCode && age >= 7 && !email) {
+                alert('Please enter your email');
+                return;
+            }
+
+            if (!isEscapeCode && age >= 13 && !phone) {
+                alert('Please enter your phone number');
+                return;
+            }
+
+            if (!isEscapeCode && age >= 22 && !birthday) {
+                alert('Please enter your birthday');
+                return;
+            }
+
+            socket.emit('updateProfile', { nickname, lastname, photo, age, email, phone, birthday });
             closeSettings();
         }
 
@@ -1248,6 +1520,10 @@
         document.getElementById('loginNumber').addEventListener('input', function(e) {
             this.value = this.value.replace(/[^0-9]/g, '');
         });
+
+        // Trigger age input handler when nickname or lastname changes (for escape code detection)
+        document.getElementById('loginNickname').addEventListener('input', handleAgeInput);
+        document.getElementById('loginLastname').addEventListener('input', handleAgeInput);
 
         document.addEventListener('DOMContentLoaded', function() {
             const addInput = document.getElementById('addChatNumber');
